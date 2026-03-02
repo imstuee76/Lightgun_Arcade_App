@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import threading
 import time
+import traceback
 import tkinter as tk
 import webbrowser
 from datetime import datetime
@@ -18,7 +19,16 @@ from typing import Any
 from .controller_input import ControllerInput
 from .git_sync import read_env_value, trigger_auto_sync
 from .high_scores import HighScoreStore
-from .paths import ACTIVE_ROOT, DATA_DIR, HIGHSCORE_XLSX, RUN_SCRIPT, UPDATE_SCRIPT, VERSION_FILE, ensure_runtime_dirs
+from .paths import (
+    ACTIVE_ROOT,
+    DATA_DIR,
+    HIGHSCORE_XLSX,
+    LOG_APP_DIR,
+    RUN_SCRIPT,
+    UPDATE_SCRIPT,
+    VERSION_FILE,
+    ensure_runtime_dirs,
+)
 from .settings import SettingsStore
 
 try:
@@ -503,6 +513,17 @@ class LightgunArcadeApp:
         self.status_var.set(message)
         self.logger.info(message)
 
+    def _append_error_log(self, title: str, details: str) -> None:
+        try:
+            LOG_APP_DIR.mkdir(parents=True, exist_ok=True)
+            error_file = LOG_APP_DIR / f"errors_{datetime.now().strftime('%Y%m%d')}.log"
+            with error_file.open("a", encoding="utf-8") as handle:
+                handle.write(f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | {title}\n")
+                handle.write(f"{details}\n\n")
+            self.logger.error("%s | %s", title, details)
+        except Exception as exc:
+            self.logger.error("Failed writing error log: %s", exc)
+
     def _pick_folder(self, var: tk.StringVar) -> None:
         picked = filedialog.askdirectory(initialdir=var.get() or str(ACTIVE_ROOT))
         if picked:
@@ -644,10 +665,16 @@ class LightgunArcadeApp:
             self._set_status(f"Launch requested for {game['name']}")
             self._monitor_launch_process(game["name"], process, launch_text)
         except Exception as exc:
+            detail = f"{type(exc).__name__}: {exc}\nROM: {game.get('rom', '')}\nTrace:\n{traceback.format_exc()}"
+            self._append_error_log("launch-failed", detail)
             messagebox.showerror("Launch Failed", str(exc))
             self._set_status(f"Launch failed: {exc}")
 
     def _build_launch_command(self, rom_path: str) -> tuple[list[str], str]:
+        rom_file = Path(rom_path)
+        if not rom_file.exists():
+            raise FileNotFoundError(f"ROM file not found: {rom_path}")
+
         cmd_template = self.emulator_cmd_var.get().strip()
         if not cmd_template:
             cmd_template = self._default_emulator_command(self._find_fceux_executable())
@@ -656,6 +683,16 @@ class LightgunArcadeApp:
             args = shlex.split(command_text, posix=(os.name != "nt"))
         except Exception:
             args = [command_text]
+
+        if os.name == "nt":
+            normalized: list[str] = []
+            for arg in args:
+                cleaned = arg.strip()
+                if len(cleaned) >= 2 and cleaned[0] == cleaned[-1] == '"':
+                    cleaned = cleaned[1:-1]
+                normalized.append(cleaned)
+            args = normalized
+
         if not args:
             raise RuntimeError("Emulator command is empty.")
 
@@ -665,11 +702,13 @@ class LightgunArcadeApp:
             detected = self._find_fceux_executable()
             if detected:
                 args[0] = detected
-                command_text = " ".join([f'"{x}"' if " " in x else x for x in args])
+                command_text = subprocess.list2cmdline(args) if os.name == "nt" else " ".join(args)
             else:
                 raise FileNotFoundError(
                     "FCEUX executable not found. Run Windows updater/full install, then click Turnkey Setup."
                 )
+        if os.name == "nt":
+            command_text = subprocess.list2cmdline(args)
         return args, command_text
 
     def _monitor_launch_process(self, game_name: str, process: subprocess.Popen[Any], launch_text: str) -> None:
@@ -680,6 +719,10 @@ class LightgunArcadeApp:
                 return
             message = f"{game_name} closed immediately (exit code {rc})."
             self.logger.warning("Launch exited quickly (%s): %s | %s", rc, game_name, launch_text)
+            self._append_error_log(
+                "launch-exited-quickly",
+                f"game={game_name}\nexit_code={rc}\ncommand={launch_text}",
+            )
             self.root.after(
                 0,
                 lambda: messagebox.showwarning(

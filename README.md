@@ -139,6 +139,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\download_support_fil
 
 - App logs: `data/logs/app/`
 - Updater logs: `data/logs/updater/`
+- App error logs: `data/logs/app/errors_YYYYMMDD.log`
 
 Each run creates a timestamped log file.
 
