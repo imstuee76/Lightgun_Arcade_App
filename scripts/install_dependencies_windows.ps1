@@ -12,6 +12,10 @@ function Ensure-WingetPackage {
         return $false
     }
     winget install --id $WingetId -e --silent --accept-package-agreements --accept-source-agreements | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "[deps-win] winget install failed for $WingetId (exit $LASTEXITCODE)"
+        return $false
+    }
     return $true
 }
 
@@ -82,6 +86,66 @@ function Invoke-Checked {
     }
 }
 
+function Get-FceuxExecutable {
+    $onPath = Get-Command fceux.exe -ErrorAction SilentlyContinue
+    if ($onPath) {
+        return $onPath.Source
+    }
+
+    $candidates = @(
+        (Join-Path $env:ProgramFiles "FCEUX\fceux.exe"),
+        (Join-Path ${env:ProgramFiles(x86)} "FCEUX\fceux.exe"),
+        (Join-Path $AppDir "tools\fceux\fceux.exe")
+    )
+    foreach ($candidate in $candidates) {
+        if ($candidate -and (Test-Path $candidate)) {
+            return $candidate
+        }
+    }
+
+    $roots = @()
+    if ($env:LocalAppData) {
+        $roots += (Join-Path $env:LocalAppData "Microsoft\WinGet\Packages")
+        $roots += (Join-Path $env:LocalAppData "Programs")
+    }
+    $roots += (Join-Path $AppDir "tools\fceux")
+
+    foreach ($root in $roots) {
+        if (-not (Test-Path $root)) { continue }
+        try {
+            $match = Get-ChildItem -Path $root -Recurse -Filter fceux.exe -File -ErrorAction SilentlyContinue |
+                Select-Object -First 1
+            if ($match) { return $match.FullName }
+        } catch {
+            continue
+        }
+    }
+    return ""
+}
+
+function Install-FceuxPortableFallback {
+    $toolsDir = Join-Path $AppDir "tools\fceux"
+    New-Item -ItemType Directory -Force -Path $toolsDir | Out-Null
+    $apiUrl = "https://api.github.com/repos/TASEmulators/fceux/releases/latest"
+    $headers = @{ "User-Agent" = "LightgunArcadeUpdater" }
+    Write-Host "[deps-win] attempting FCEUX portable fallback from GitHub releases"
+    $release = Invoke-RestMethod -Uri $apiUrl -Headers $headers
+    $asset = $release.assets |
+        Where-Object { $_.name -match "(?i)win" -and $_.name -match "(?i)\.zip$" } |
+        Select-Object -First 1
+    if (-not $asset) {
+        throw "Could not find Windows zip asset in latest FCEUX release."
+    }
+    $zipPath = Join-Path $toolsDir $asset.name
+    $extractDir = Join-Path $toolsDir "portable"
+    Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipPath -Headers $headers
+    if (Test-Path $extractDir) {
+        Remove-Item -Recurse -Force $extractDir
+    }
+    Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+    return (Get-FceuxExecutable)
+}
+
 Write-Host "[deps-win] checking python runtime (requires 3.10 - 3.12)"
 $pythonInfo = Select-CompatiblePythonRunner
 if (-not $pythonInfo) {
@@ -110,12 +174,25 @@ if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
 }
 
 Write-Host "[deps-win] checking fceux"
-if (-not (Get-Command fceux -ErrorAction SilentlyContinue) -and -not (Get-Command fceux.exe -ErrorAction SilentlyContinue)) {
+$fceuxExe = Get-FceuxExecutable
+if (-not $fceuxExe) {
     Write-Host "[deps-win] installing FCEUX via winget"
-    if (-not (Ensure-WingetPackage -WingetId "FCEUX.FCEUX")) {
-        Write-Host "[deps-win] winget not found; install FCEUX manually from https://fceux.com/web/download.html"
+    $installed = Ensure-WingetPackage -WingetId "FCEUX.FCEUX"
+    if ($installed) {
+        $fceuxExe = Get-FceuxExecutable
+    }
+    if (-not $fceuxExe) {
+        try {
+            $fceuxExe = Install-FceuxPortableFallback
+        } catch {
+            Write-Host "[deps-win] portable fallback failed: $($_.Exception.Message)"
+        }
+    }
+    if (-not $fceuxExe) {
+        throw "FCEUX installation failed. Install manually from https://fceux.com/web/download.html"
     }
 }
+Write-Host "[deps-win] fceux executable: $fceuxExe"
 
 Write-Host "[deps-win] installing python packages"
 $pipUpgrade = @($pythonRunner + @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"))

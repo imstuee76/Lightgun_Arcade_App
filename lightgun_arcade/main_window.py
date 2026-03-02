@@ -85,10 +85,10 @@ class LightgunArcadeApp:
 
         detected_fceux = self._find_fceux_executable()
         current_emulator = str(app_settings.get("emulator_command", "")).strip()
-        if not current_emulator:
+        if detected_fceux and (not current_emulator or "fceux" in current_emulator.lower()):
             app_settings["emulator_command"] = self._default_emulator_command(detected_fceux)
             changed = True
-        elif ("fceux" in current_emulator.lower()) and detected_fceux and ("fceux.exe" in current_emulator.lower()):
+        elif not current_emulator:
             app_settings["emulator_command"] = self._default_emulator_command(detected_fceux)
             changed = True
 
@@ -132,6 +132,17 @@ class LightgunArcadeApp:
         if found:
             return found
         if os.name == "nt":
+            try:
+                where_output = subprocess.run(
+                    ["where", "fceux.exe"], check=False, capture_output=True, text=True
+                ).stdout.strip()
+                for line in where_output.splitlines():
+                    candidate = line.strip()
+                    if candidate and Path(candidate).exists():
+                        return candidate
+            except Exception:
+                pass
+
             pf = os.environ.get("ProgramFiles", r"C:\Program Files")
             pfx86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
             local = os.environ.get("LOCALAPPDATA", "")
@@ -145,8 +156,26 @@ class LightgunArcadeApp:
             if local:
                 winget_root = Path(local) / "Microsoft" / "WinGet" / "Packages"
                 if winget_root.exists():
-                    for candidate in winget_root.glob("FCEUX.FCEUX_*/*/fceux.exe"):
+                    try:
+                        for candidate in winget_root.rglob("fceux.exe"):
+                            candidates.append(str(candidate))
+                    except Exception:
+                        pass
+                programs_root = Path(local) / "Programs"
+                if programs_root.exists():
+                    try:
+                        for candidate in programs_root.rglob("fceux.exe"):
+                            candidates.append(str(candidate))
+                    except Exception:
+                        pass
+
+            tools_root = ACTIVE_ROOT / "tools" / "fceux"
+            if tools_root.exists():
+                try:
+                    for candidate in tools_root.rglob("fceux.exe"):
                         candidates.append(str(candidate))
+                except Exception:
+                    pass
         else:
             candidates.extend(
                 [

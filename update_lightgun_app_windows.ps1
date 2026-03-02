@@ -27,10 +27,12 @@ function Invoke-CheckedProcess {
         [string]$FilePath,
         [string[]]$Arguments,
         [string]$StepName
-    )
+)
     & $FilePath @Arguments
-    if ($LASTEXITCODE -ne 0) {
-        throw "$StepName failed with exit code $LASTEXITCODE"
+    $ok = $?
+    $code = $LASTEXITCODE
+    if ((-not $ok) -or ($code -ne 0)) {
+        throw "$StepName failed (ok=$ok, exit=$code)"
     }
 }
 
