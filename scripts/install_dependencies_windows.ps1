@@ -15,24 +15,47 @@ function Ensure-WingetPackage {
     return $true
 }
 
-function Resolve-PythonCommand {
-    $pyCmd = Get-Command py -ErrorAction SilentlyContinue
-    if ($pyCmd) {
-        & py -3 --version *> $null
-        if ($LASTEXITCODE -eq 0) {
-            return @("py", "-3")
+function Get-PythonVersion {
+    param(
+        [string[]]$Command
+    )
+    try {
+        $output = & $Command[0] $Command[1..($Command.Count - 1)] -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+        if ($LASTEXITCODE -ne 0) { return "" }
+        return ($output | Out-String).Trim()
+    } catch {
+        return ""
+    }
+}
+
+function Get-PythonRunners {
+    $runners = @()
+    $local312 = Join-Path $env:LocalAppData "Programs\Python\Python312\python.exe"
+    if (Test-Path $local312) { $runners += ,@($local312) }
+    $runners += ,@("py", "-3.12")
+    $runners += ,@("py", "-3.11")
+    $runners += ,@("py", "-3.10")
+    $runners += ,@("py", "-3")
+    $runners += ,@("python")
+    return $runners
+}
+
+function Select-CompatiblePythonRunner {
+    foreach ($runner in Get-PythonRunners) {
+        $ver = Get-PythonVersion -Command $runner
+        if (-not $ver) { continue }
+        $parts = $ver.Split(".")
+        if ($parts.Count -lt 2) { continue }
+        $major = [int]$parts[0]
+        $minor = [int]$parts[1]
+        if ($major -eq 3 -and $minor -ge 10 -and $minor -le 12) {
+            return @{
+                runner = $runner
+                version = $ver
+            }
         }
     }
-
-    $pythonCmd = Get-Command python -ErrorAction SilentlyContinue
-    if ($pythonCmd) {
-        & python --version *> $null
-        if ($LASTEXITCODE -eq 0) {
-            return @("python")
-        }
-    }
-
-    return @()
+    return $null
 }
 
 function Invoke-Checked {
@@ -40,32 +63,30 @@ function Invoke-Checked {
         [string[]]$Command,
         [string]$ErrorMessage
     )
-    if (-not $Command -or $Command.Count -eq 0) {
-        throw "Internal error: empty command invocation."
-    }
     & $Command[0] $Command[1..($Command.Count - 1)]
     if ($LASTEXITCODE -ne 0) {
         throw $ErrorMessage
     }
 }
 
-Write-Host "[deps-win] checking python runtime"
-$pythonRunner = Resolve-PythonCommand
-if (-not $pythonRunner -or $pythonRunner.Count -eq 0) {
-    Write-Host "[deps-win] python runtime missing, attempting install via winget"
+Write-Host "[deps-win] checking python runtime (requires 3.10 - 3.12)"
+$pythonInfo = Select-CompatiblePythonRunner
+if (-not $pythonInfo) {
+    Write-Host "[deps-win] compatible python not found, attempting install of Python 3.12 via winget"
     $installed = Ensure-WingetPackage -WingetId "Python.Python.3.12"
     if (-not $installed) {
-        throw "Python runtime is required. Install Python 3 and re-run."
+        throw "Python 3.10-3.12 is required. Install Python 3.12 and re-run updater."
     }
-
     $env:Path += ";$env:LocalAppData\Programs\Python\Python312;$env:LocalAppData\Programs\Python\Python312\Scripts"
-    $pythonRunner = Resolve-PythonCommand
-    if (-not $pythonRunner -or $pythonRunner.Count -eq 0) {
-        throw "Python install attempted but runtime is still unavailable. Open a new terminal and run updater again."
+    $pythonInfo = Select-CompatiblePythonRunner
+    if (-not $pythonInfo) {
+        throw "Python 3.12 install attempted but still not available. Open a new terminal and run updater again."
     }
 }
 
-Write-Host "[deps-win] using python runner: $($pythonRunner -join ' ')"
+$pythonRunner = [string[]]$pythonInfo.runner
+$pythonVersion = [string]$pythonInfo.version
+Write-Host "[deps-win] using python runner: $($pythonRunner -join ' ') ($pythonVersion)"
 
 Write-Host "[deps-win] checking git"
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
@@ -84,8 +105,8 @@ if (-not (Get-Command fceux -ErrorAction SilentlyContinue) -and -not (Get-Comman
 }
 
 Write-Host "[deps-win] installing python packages"
-$pipUpgrade = @($pythonRunner + @("-m", "pip", "install", "--upgrade", "pip"))
-Invoke-Checked -Command $pipUpgrade -ErrorMessage "Failed to upgrade pip."
+$pipUpgrade = @($pythonRunner + @("-m", "pip", "install", "--upgrade", "pip", "setuptools", "wheel"))
+Invoke-Checked -Command $pipUpgrade -ErrorMessage "Failed to upgrade pip/setuptools/wheel."
 
 $pipInstall = @($pythonRunner + @("-m", "pip", "install", "-r", "$AppDir\requirements.txt"))
 Invoke-Checked -Command $pipInstall -ErrorMessage "Failed to install Python requirements."

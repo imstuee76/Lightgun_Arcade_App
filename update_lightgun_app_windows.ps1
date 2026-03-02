@@ -22,6 +22,18 @@ function Get-EnvMap {
     return $map
 }
 
+function Invoke-CheckedProcess {
+    param(
+        [string]$FilePath,
+        [string[]]$Arguments,
+        [string]$StepName
+    )
+    & $FilePath @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "$StepName failed with exit code $LASTEXITCODE"
+    }
+}
+
 function Sync-FromGitHubZip {
     param(
         [string]$AppDir,
@@ -184,13 +196,22 @@ try {
     }
 
     Write-Host "[updater-win] checking dependencies"
-    powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $AppDir "scripts\install_dependencies_windows.ps1")
+    Invoke-CheckedProcess `
+        -FilePath "powershell" `
+        -Arguments @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $AppDir "scripts\install_dependencies_windows.ps1")) `
+        -StepName "Dependency install"
 
     Write-Host "[updater-win] creating desktop shortcuts"
-    powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $AppDir "scripts\create_desktop_shortcuts_windows.ps1")
+    Invoke-CheckedProcess `
+        -FilePath "powershell" `
+        -Arguments @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $AppDir "scripts\create_desktop_shortcuts_windows.ps1")) `
+        -StepName "Desktop shortcut creation"
 
     Write-Host "[updater-win] checking support files"
-    powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $AppDir "scripts\download_support_files_windows.ps1")
+    Invoke-CheckedProcess `
+        -FilePath "powershell" `
+        -Arguments @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $AppDir "scripts\download_support_files_windows.ps1")) `
+        -StepName "Support file download"
 
     if (-not $NoLaunch) {
         Write-Host "[updater-win] launching app"

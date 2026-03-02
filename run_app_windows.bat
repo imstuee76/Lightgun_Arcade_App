@@ -14,8 +14,15 @@ set "LOG_FILE=%LOG_DIR%\launcher_%STAMP%.log"
 echo [run_app_windows] %date% %time% starting app from %APP_DIR% > "%LOG_FILE%"
 cd /d "%APP_DIR%"
 
+if exist "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" (
+  "%LOCALAPPDATA%\Programs\Python\Python312\python.exe" app.py >> "%LOG_FILE%" 2>&1
+  if %errorlevel%==0 goto :done
+)
+
 where py >nul 2>nul
 if %errorlevel%==0 (
+  py -3.12 app.py >> "%LOG_FILE%" 2>&1
+  if %errorlevel%==0 goto :done
   py -3 app.py >> "%LOG_FILE%" 2>&1
   if %errorlevel%==0 goto :done
 )
