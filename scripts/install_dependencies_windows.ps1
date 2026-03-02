@@ -20,7 +20,13 @@ function Get-PythonVersion {
         [string[]]$Command
     )
     try {
-        $output = & $Command[0] $Command[1..($Command.Count - 1)] -c "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"
+        if (-not $Command -or $Command.Count -eq 0) { return "" }
+        $baseArgs = @()
+        if ($Command.Count -gt 1) {
+            $baseArgs = $Command[1..($Command.Count - 1)]
+        }
+        $allArgs = @($baseArgs + @("-c", "import sys; print(f'{sys.version_info.major}.{sys.version_info.minor}')"))
+        $output = & $Command[0] @allArgs 2>$null
         if ($LASTEXITCODE -ne 0) { return "" }
         return ($output | Out-String).Trim()
     } catch {
@@ -63,7 +69,14 @@ function Invoke-Checked {
         [string[]]$Command,
         [string]$ErrorMessage
     )
-    & $Command[0] $Command[1..($Command.Count - 1)]
+    if (-not $Command -or $Command.Count -eq 0) {
+        throw "Internal error: empty command invocation."
+    }
+    $args = @()
+    if ($Command.Count -gt 1) {
+        $args = $Command[1..($Command.Count - 1)]
+    }
+    & $Command[0] @args
     if ($LASTEXITCODE -ne 0) {
         throw $ErrorMessage
     }
