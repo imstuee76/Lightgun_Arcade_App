@@ -3,7 +3,11 @@ from __future__ import annotations
 import os
 import queue
 import re
+import shlex
+import shutil
 import subprocess
+import threading
+import time
 import tkinter as tk
 import webbrowser
 from datetime import datetime
@@ -35,6 +39,7 @@ class LightgunArcadeApp:
 
         self.settings_store = SettingsStore()
         self.settings = self.settings_store.data
+        self._apply_turnkey_defaults()
         self.high_scores = HighScoreStore()
         self.action_queue: "queue.Queue[str]" = queue.Queue()
         self.controller = ControllerInput(self.action_queue, self.settings["controller"], self.logger)
@@ -63,6 +68,97 @@ class LightgunArcadeApp:
         if VERSION_FILE.exists():
             return VERSION_FILE.read_text(encoding="utf-8").strip() or "0.1.0+0"
         return "0.1.0+0"
+
+    def _apply_turnkey_defaults(self) -> None:
+        changed = False
+        library = self.settings.get("library", {})
+        app_settings = self.settings.get("app", {})
+        sinden = self.settings.get("sinden", {})
+
+        default_rom_dir = str(ACTIVE_ROOT / "roms")
+        if not library.get("rom_dir"):
+            library["rom_dir"] = default_rom_dir
+            changed = True
+        if not library.get("image_dir"):
+            library["image_dir"] = default_rom_dir
+            changed = True
+
+        detected_fceux = self._find_fceux_executable()
+        current_emulator = str(app_settings.get("emulator_command", "")).strip()
+        if not current_emulator:
+            app_settings["emulator_command"] = self._default_emulator_command(detected_fceux)
+            changed = True
+        elif ("fceux" in current_emulator.lower()) and detected_fceux and ("fceux.exe" in current_emulator.lower()):
+            app_settings["emulator_command"] = self._default_emulator_command(detected_fceux)
+            changed = True
+
+        if os.name == "nt":
+            script_path = ACTIVE_ROOT / "scripts" / "sinden_tools_windows.ps1"
+            if script_path.exists():
+                calibration_cmd = (
+                    f'powershell -NoProfile -ExecutionPolicy Bypass -File "{script_path}" -Mode calibration'
+                )
+                button_cmd = f'powershell -NoProfile -ExecutionPolicy Bypass -File "{script_path}" -Mode buttons'
+                diagnostics_cmd = (
+                    f'powershell -NoProfile -ExecutionPolicy Bypass -File "{script_path}" -Mode diagnostics'
+                )
+                if not str(sinden.get("calibration_command", "")).strip():
+                    sinden["calibration_command"] = calibration_cmd
+                    changed = True
+                if not str(sinden.get("button_config_command", "")).strip():
+                    sinden["button_config_command"] = button_cmd
+                    changed = True
+                if not str(sinden.get("diagnostics_command", "")).strip():
+                    sinden["diagnostics_command"] = diagnostics_cmd
+                    changed = True
+
+        if changed:
+            self.settings_store.save()
+            self.logger.info("Turnkey defaults applied to settings")
+
+    @staticmethod
+    def _default_emulator_command(exe_path: str | None = None) -> str:
+        if os.name == "nt":
+            if exe_path:
+                return f'"{exe_path}" --fullscreen 1 "{{rom}}"'
+            return 'fceux.exe --fullscreen 1 "{rom}"'
+        if exe_path:
+            return f'"{exe_path}" --fullscreen "{{rom}}"'
+        return 'fceux --fullscreen "{rom}"'
+
+    def _find_fceux_executable(self) -> str | None:
+        candidates: list[str] = []
+        found = shutil.which("fceux.exe" if os.name == "nt" else "fceux")
+        if found:
+            return found
+        if os.name == "nt":
+            pf = os.environ.get("ProgramFiles", r"C:\Program Files")
+            pfx86 = os.environ.get("ProgramFiles(x86)", r"C:\Program Files (x86)")
+            local = os.environ.get("LOCALAPPDATA", "")
+            candidates.extend(
+                [
+                    str(Path(pf) / "FCEUX" / "fceux.exe"),
+                    str(Path(pfx86) / "FCEUX" / "fceux.exe"),
+                    str(ACTIVE_ROOT / "tools" / "fceux" / "fceux.exe"),
+                ]
+            )
+            if local:
+                winget_root = Path(local) / "Microsoft" / "WinGet" / "Packages"
+                if winget_root.exists():
+                    for candidate in winget_root.glob("FCEUX.FCEUX_*/*/fceux.exe"):
+                        candidates.append(str(candidate))
+        else:
+            candidates.extend(
+                [
+                    str(Path("/usr/bin/fceux")),
+                    str(Path("/usr/local/bin/fceux")),
+                    str(ACTIVE_ROOT / "tools" / "fceux" / "fceux"),
+                ]
+            )
+        for candidate in candidates:
+            if Path(candidate).exists():
+                return candidate
+        return None
 
     def _build_ui(self) -> None:
         self.notebook = ttk.Notebook(self.root)
@@ -226,6 +322,11 @@ class LightgunArcadeApp:
                 row=0, column=col, padx=6, pady=6
             )
             col += 1
+        ttk.Button(
+            frame,
+            text="Open Sinden Utility",
+            command=lambda: self._run_shell(self.calibration_cmd_var.get()),
+        ).grid(row=5, column=0, sticky="w", pady=6)
         frame.columnconfigure(1, weight=1)
 
     def _build_controller_tab(self) -> None:
@@ -315,6 +416,7 @@ class LightgunArcadeApp:
 
         actions = ttk.Frame(frame)
         actions.pack(fill="x", pady=6)
+        ttk.Button(actions, text="Turnkey Setup", command=self._run_turnkey_setup).pack(side="left", padx=4)
         ttk.Button(actions, text="Run Updater", command=self._run_updater).pack(side="left", padx=4)
         ttk.Button(actions, text="Run App Script", command=self._run_launcher).pack(side="left", padx=4)
         ttk.Button(actions, text="Open Data Folder", command=lambda: self._open_path(DATA_DIR)).pack(side="left", padx=4)
@@ -506,19 +608,59 @@ class LightgunArcadeApp:
             messagebox.showwarning("Blocked By Schedule", f"{game['name']} is outside allowed launch schedule.")
             return
 
-        cmd_template = self.emulator_cmd_var.get().strip()
-        if not cmd_template:
-            if os.name == "nt":
-                cmd_template = 'fceux.exe --fullscreen 1 "{rom}"'
-            else:
-                cmd_template = 'fceux --fullscreen "{rom}"'
-        command = cmd_template.format(rom=game["rom"])
         try:
-            subprocess.Popen(command, shell=True)
-            self._set_status(f"Launched {game['name']} with fceux")
+            launch_args, launch_text = self._build_launch_command(game["rom"])
+            self.logger.info("Launching game '%s' with command: %s", game["name"], launch_text)
+            process = subprocess.Popen(launch_args, shell=False)
+            self._set_status(f"Launch requested for {game['name']}")
+            self._monitor_launch_process(game["name"], process, launch_text)
         except Exception as exc:
             messagebox.showerror("Launch Failed", str(exc))
             self._set_status(f"Launch failed: {exc}")
+
+    def _build_launch_command(self, rom_path: str) -> tuple[list[str], str]:
+        cmd_template = self.emulator_cmd_var.get().strip()
+        if not cmd_template:
+            cmd_template = self._default_emulator_command(self._find_fceux_executable())
+        command_text = cmd_template.format(rom=rom_path)
+        try:
+            args = shlex.split(command_text, posix=(os.name != "nt"))
+        except Exception:
+            args = [command_text]
+        if not args:
+            raise RuntimeError("Emulator command is empty.")
+
+        executable = args[0]
+        exists = Path(executable).exists() or bool(shutil.which(executable))
+        if not exists and "fceux" in executable.lower():
+            detected = self._find_fceux_executable()
+            if detected:
+                args[0] = detected
+                command_text = " ".join([f'"{x}"' if " " in x else x for x in args])
+            else:
+                raise FileNotFoundError(
+                    "FCEUX executable not found. Run Windows updater/full install, then click Turnkey Setup."
+                )
+        return args, command_text
+
+    def _monitor_launch_process(self, game_name: str, process: subprocess.Popen[Any], launch_text: str) -> None:
+        def _watch() -> None:
+            time.sleep(1.5)
+            rc = process.poll()
+            if rc is None:
+                return
+            message = f"{game_name} closed immediately (exit code {rc})."
+            self.logger.warning("Launch exited quickly (%s): %s | %s", rc, game_name, launch_text)
+            self.root.after(
+                0,
+                lambda: messagebox.showwarning(
+                    "Game Launch Warning",
+                    f"{message}\nCheck emulator command and ROM compatibility.\n\nCommand:\n{launch_text}",
+                ),
+            )
+            self.root.after(0, lambda: self._set_status(message))
+
+        threading.Thread(target=_watch, daemon=True).start()
 
     def _launch_allowed(self, game_name: str) -> bool:
         schedule = self.settings["game_schedules"].get(game_name, {})
@@ -592,6 +734,18 @@ class LightgunArcadeApp:
             return
         _name, url = self.links_tree.item(selected[0], "values")
         webbrowser.open(url)
+
+    def _run_turnkey_setup(self) -> None:
+        self._apply_turnkey_defaults()
+        self.settings = self.settings_store.load()
+        self.emulator_cmd_var.set(self.settings["app"].get("emulator_command", ""))
+        self.rom_dir_var.set(self.settings["library"].get("rom_dir", str(ACTIVE_ROOT / "roms")))
+        self.image_dir_var.set(self.settings["library"].get("image_dir", str(ACTIVE_ROOT / "roms")))
+        self.calibration_cmd_var.set(self.settings["sinden"].get("calibration_command", ""))
+        self.button_cfg_cmd_var.set(self.settings["sinden"].get("button_config_command", ""))
+        self.diagnostics_cmd_var.set(self.settings["sinden"].get("diagnostics_command", ""))
+        self._load_games()
+        self._set_status("Turnkey defaults applied")
 
     def _run_updater(self) -> None:
         if not UPDATE_SCRIPT.exists():

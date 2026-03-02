@@ -77,6 +77,11 @@ Windows first-run does:
 To update only (no app launch), run:
 `C:\Lightgun_Arcade_app\update_only_windows.bat`
 
+After install:
+1. Put ROMs in `C:\Lightgun_Arcade_app\roms\`
+2. Open app and click `Turnkey Setup` in `App Settings`
+3. Launch game from `Game Library`
+
 Notes:
 - If `.git` exists, updater uses `git fetch/reset`.
 - If `.git` is missing, updater downloads latest `main` zip from `GITHUB_REPO` in `.env`.
@@ -119,6 +124,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -File scripts\download_support_fil
 - Download location:
   - Linux: `/home/arcade/Lightgun_Arcade_app/tools/sinden/`
   - Windows: `C:\Lightgun_Arcade_app\tools\sinden\`
+- Windows app auto-fills Sinden commands and launches Sinden utility UI from this folder.
 
 ### 4) Git credentials (.env) (required for auto-sync)
 - Path:
