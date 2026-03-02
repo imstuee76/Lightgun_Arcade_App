@@ -1,0 +1,2 @@
+"""Lightgun Arcade application package."""
+
