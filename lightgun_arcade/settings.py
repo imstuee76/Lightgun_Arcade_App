@@ -50,6 +50,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "emulator_command": default_emulator_command,
         "git_branch": "main",
         "auto_git_sync": True,
+        "auto_score_capture": True,
+        "player_name": os.getenv("USERNAME", "Player"),
         "resource_links": {
             "FCEUX Docs": "https://fceux.com/web/help/fceux.html",
             "Sinden Details": "https://sindenlightgun.com/details/",

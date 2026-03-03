@@ -80,7 +80,8 @@ To update only (no app launch), run:
 After install:
 1. Put ROMs in `C:\Lightgun_Arcade_app\roms\`
 2. Open app and click `Turnkey Setup` in `App Settings`
-3. Launch game from `Game Library`
+3. Set your `Player Name` in `App Settings`
+4. Launch game from `Game Library`
 
 Notes:
 - If `.git` exists, updater uses `git fetch/reset`.
@@ -170,3 +171,10 @@ Optional:
 
 - `GIT_USER_NAME=...`
 - `GIT_USER_EMAIL=...`
+
+## Auto Score Capture
+
+- Duck Hunt score is captured automatically from emulator memory when game closes.
+- Captured score is stored only when it beats the current top score for that game.
+- Player name comes from `App Settings -> Player Name`.
+- Error details are written to `data/logs/app/errors_YYYYMMDD.log`.

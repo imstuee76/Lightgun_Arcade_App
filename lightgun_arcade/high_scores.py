@@ -69,6 +69,14 @@ class HighScoreStore:
             ).fetchall()
         return [HighScore(int(row[0]), str(row[1]), str(row[2]), str(row[3])) for row in rows]
 
+    def top_score_for_game(self, game_name: str) -> int:
+        with self._connect() as con:
+            row = con.execute(
+                "SELECT COALESCE(MAX(score), 0) FROM high_scores WHERE lower(game_name) = lower(?)",
+                (game_name,),
+            ).fetchone()
+        return int(row[0]) if row and row[0] is not None else 0
+
     def export_all(self, xlsx_path: Path = HIGHSCORE_XLSX) -> tuple[Path, Path]:
         xlsx_path.parent.mkdir(parents=True, exist_ok=True)
         csv_path = xlsx_path.with_suffix(".csv")
@@ -97,4 +105,3 @@ class HighScoreStore:
         for entry in scores:
             sheet.append([entry.score, entry.name, entry.played_at, entry.game_name])
         book.save(xlsx_path)
-

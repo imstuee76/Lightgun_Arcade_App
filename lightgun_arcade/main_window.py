@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import queue
 import re
@@ -21,6 +22,7 @@ from .git_sync import read_env_value, trigger_auto_sync
 from .high_scores import HighScoreStore
 from .paths import (
     ACTIVE_ROOT,
+    CACHE_DIR,
     DATA_DIR,
     HIGHSCORE_XLSX,
     LOG_APP_DIR,
@@ -427,6 +429,8 @@ class LightgunArcadeApp:
         self.emulator_cmd_var = tk.StringVar(value=app_settings.get("emulator_command", ""))
         self.branch_var = tk.StringVar(value=app_settings.get("git_branch", "main"))
         self.auto_sync_var = tk.BooleanVar(value=bool(app_settings.get("auto_git_sync", True)))
+        self.auto_score_capture_var = tk.BooleanVar(value=bool(app_settings.get("auto_score_capture", True)))
+        self.player_name_var = tk.StringVar(value=app_settings.get("player_name", os.getenv("USERNAME", "Player")))
         self.version_var = tk.StringVar(value=self._read_version())
 
         frame = ttk.Frame(self.app_tab)
@@ -448,8 +452,13 @@ class LightgunArcadeApp:
         )
         ttk.Label(exec_box, text="Git Branch").grid(row=1, column=0, sticky="w", padx=6, pady=6)
         ttk.Entry(exec_box, textvariable=self.branch_var, width=24).grid(row=1, column=1, sticky="w", padx=6, pady=6)
+        ttk.Label(exec_box, text="Player Name").grid(row=2, column=0, sticky="w", padx=6, pady=6)
+        ttk.Entry(exec_box, textvariable=self.player_name_var, width=24).grid(row=2, column=1, sticky="w", padx=6, pady=6)
         ttk.Checkbutton(exec_box, text="Enable auto git sync", variable=self.auto_sync_var).grid(
-            row=2, column=0, columnspan=2, sticky="w", padx=6, pady=6
+            row=3, column=0, columnspan=2, sticky="w", padx=6, pady=3
+        )
+        ttk.Checkbutton(exec_box, text="Enable auto score capture (Duck Hunt)", variable=self.auto_score_capture_var).grid(
+            row=4, column=0, columnspan=2, sticky="w", padx=6, pady=3
         )
         exec_box.columnconfigure(1, weight=1)
 
@@ -659,18 +668,18 @@ class LightgunArcadeApp:
             return
 
         try:
-            launch_args, launch_text = self._build_launch_command(game["rom"])
+            launch_args, launch_text, launch_env, score_meta = self._build_launch_command(game["rom"], game["name"])
             self.logger.info("Launching game '%s' with command: %s", game["name"], launch_text)
-            process = subprocess.Popen(launch_args, shell=False)
+            process = subprocess.Popen(launch_args, shell=False, env=launch_env)
             self._set_status(f"Launch requested for {game['name']}")
-            self._monitor_launch_process(game["name"], process, launch_text)
+            self._monitor_launch_process(game["name"], process, launch_text, score_meta)
         except Exception as exc:
             detail = f"{type(exc).__name__}: {exc}\nROM: {game.get('rom', '')}\nTrace:\n{traceback.format_exc()}"
             self._append_error_log("launch-failed", detail)
             messagebox.showerror("Launch Failed", str(exc))
             self._set_status(f"Launch failed: {exc}")
 
-    def _build_launch_command(self, rom_path: str) -> tuple[list[str], str]:
+    def _build_launch_command(self, rom_path: str, game_name: str) -> tuple[list[str], str, dict[str, str], dict[str, Any]]:
         rom_file = Path(rom_path)
         if not rom_file.exists():
             raise FileNotFoundError(f"ROM file not found: {rom_path}")
@@ -707,30 +716,111 @@ class LightgunArcadeApp:
                 raise FileNotFoundError(
                     "FCEUX executable not found. Run Windows updater/full install, then click Turnkey Setup."
                 )
+
+        launch_env = os.environ.copy()
+        score_meta: dict[str, Any] = {"enabled": False}
+        score_capture_enabled = bool(self.settings["app"].get("auto_score_capture", True))
+        if score_capture_enabled:
+            score_meta = self._prepare_score_capture(game_name)
+            if score_meta.get("enabled", False) and "fceux" in args[0].lower():
+                script_path = str(ACTIVE_ROOT / "scripts" / "fceux_score_capture.lua")
+                if "-lua" not in [part.lower() for part in args]:
+                    insert_at = len(args) - 1 if len(args) > 1 else len(args)
+                    args.insert(insert_at, "-lua")
+                    args.insert(insert_at + 1, script_path)
+                launch_env["LIGHTGUN_SCORE_CFG"] = str(score_meta.get("config_file", ""))
+
         if os.name == "nt":
             command_text = subprocess.list2cmdline(args)
-        return args, command_text
+        return args, command_text, launch_env, score_meta
 
-    def _monitor_launch_process(self, game_name: str, process: subprocess.Popen[Any], launch_text: str) -> None:
+    def _normalize_game_key(self, game_name: str) -> str:
+        return re.sub(r"[^a-z0-9]+", "_", game_name.strip().lower()).strip("_")
+
+    def _prepare_score_capture(self, game_name: str) -> dict[str, Any]:
+        key = self._normalize_game_key(game_name)
+        supported = {"duck_hunt", "duckhunt"}
+        if key not in supported:
+            return {"enabled": False}
+        CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        score_file = CACHE_DIR / "last_score.json"
+        config_file = CACHE_DIR / "score_capture.conf"
+        start_ts = int(time.time())
+        config_text = "\n".join(
+            [
+                f"GAME={key}",
+                f"OUTFILE={score_file}",
+                f"START_TS={start_ts}",
+            ]
+        )
+        config_file.write_text(config_text + "\n", encoding="utf-8")
+        return {
+            "enabled": True,
+            "game_key": key,
+            "score_file": str(score_file),
+            "config_file": str(config_file),
+            "start_ts": start_ts,
+        }
+
+    def _ingest_auto_score(self, game_name: str, score_meta: dict[str, Any]) -> None:
+        if not score_meta.get("enabled", False):
+            return
+        score_file = Path(str(score_meta.get("score_file", "")))
+        if not score_file.exists():
+            return
+        try:
+            payload = json.loads(score_file.read_text(encoding="utf-8", errors="ignore"))
+            captured_score = int(payload.get("score", 0))
+            captured_ts = int(payload.get("timestamp", 0))
+            start_ts = int(score_meta.get("start_ts", 0))
+            captured_game = str(payload.get("game", "")).strip().lower()
+            if captured_score <= 0:
+                return
+            if start_ts and captured_ts and captured_ts + 1 < start_ts:
+                return
+            if captured_game and captured_game not in {"duck_hunt", "duckhunt"}:
+                return
+            top = self.high_scores.top_score_for_game(game_name)
+            if captured_score > top:
+                player_name = self.player_name_var.get().strip() or self.settings["app"].get("player_name", "Player")
+                self.high_scores.add_score(score=captured_score, name=player_name, game_name=game_name)
+                self._export_scores(silent=True)
+                self._refresh_high_scores()
+                self._set_status(f"New high score captured: {captured_score} ({game_name})")
+                if self.auto_sync_var.get():
+                    trigger_auto_sync("high-score-auto-capture", self.branch_var.get().strip() or "main", self.logger)
+        except Exception as exc:
+            self._append_error_log("auto-score-capture-failed", f"{type(exc).__name__}: {exc}")
+
+    def _monitor_launch_process(
+        self, game_name: str, process: subprocess.Popen[Any], launch_text: str, score_meta: dict[str, Any]
+    ) -> None:
         def _watch() -> None:
             time.sleep(1.5)
             rc = process.poll()
+            quick_exit = False
             if rc is None:
-                return
-            message = f"{game_name} closed immediately (exit code {rc})."
-            self.logger.warning("Launch exited quickly (%s): %s | %s", rc, game_name, launch_text)
-            self._append_error_log(
-                "launch-exited-quickly",
-                f"game={game_name}\nexit_code={rc}\ncommand={launch_text}",
-            )
-            self.root.after(
-                0,
-                lambda: messagebox.showwarning(
-                    "Game Launch Warning",
-                    f"{message}\nCheck emulator command and ROM compatibility.\n\nCommand:\n{launch_text}",
-                ),
-            )
-            self.root.after(0, lambda: self._set_status(message))
+                rc = process.wait()
+            else:
+                quick_exit = True
+                message = f"{game_name} closed immediately (exit code {rc})."
+                self.logger.warning("Launch exited quickly (%s): %s | %s", rc, game_name, launch_text)
+                self._append_error_log(
+                    "launch-exited-quickly",
+                    f"game={game_name}\nexit_code={rc}\ncommand={launch_text}",
+                )
+                self.root.after(
+                    0,
+                    lambda: messagebox.showwarning(
+                        "Game Launch Warning",
+                        f"{message}\nCheck emulator command and ROM compatibility.\n\nCommand:\n{launch_text}",
+                    ),
+                )
+                self.root.after(0, lambda: self._set_status(message))
+
+            if not quick_exit:
+                self.root.after(0, lambda: self._set_status(f"{game_name} closed (exit code {rc})."))
+            self.root.after(0, lambda: self._ingest_auto_score(game_name, score_meta))
 
         threading.Thread(target=_watch, daemon=True).start()
 
@@ -767,6 +857,35 @@ class LightgunArcadeApp:
             messagebox.showerror("Command Failed", str(exc))
 
     def _detect_resolutions(self) -> list[str]:
+        if os.name == "nt":
+            ps_script = (
+                "try { "
+                "$m = Get-CimInstance -Namespace root\\wmi -ClassName WmiMonitorListedSupportedSourceModes -ErrorAction Stop; "
+                "$m | ForEach-Object { $_.MonitorSourceModes } | ForEach-Object { "
+                "if($_.HorizontalActivePixels -gt 0 -and $_.VerticalActivePixels -gt 0){ "
+                "\"{0}x{1}\" -f $_.HorizontalActivePixels, $_.VerticalActivePixels } } | "
+                "Sort-Object -Unique "
+                "} catch { '' }"
+            )
+            try:
+                output = subprocess.run(
+                    ["powershell", "-NoProfile", "-Command", ps_script], check=False, capture_output=True, text=True
+                ).stdout
+                found = [line.strip() for line in output.splitlines() if re.match(r"^\d+x\d+$", line.strip())]
+                if found:
+                    return found
+            except Exception:
+                pass
+
+            try:
+                width = self.root.winfo_screenwidth()
+                height = self.root.winfo_screenheight()
+                if width > 0 and height > 0:
+                    return [f"{width}x{height}"]
+            except Exception:
+                return []
+            return []
+
         if os.name != "posix":
             return []
         try:
@@ -811,6 +930,8 @@ class LightgunArcadeApp:
         self._apply_turnkey_defaults()
         self.settings = self.settings_store.load()
         self.emulator_cmd_var.set(self.settings["app"].get("emulator_command", ""))
+        self.player_name_var.set(self.settings["app"].get("player_name", os.getenv("USERNAME", "Player")))
+        self.auto_score_capture_var.set(bool(self.settings["app"].get("auto_score_capture", True)))
         self.rom_dir_var.set(self.settings["library"].get("rom_dir", str(ACTIVE_ROOT / "roms")))
         self.image_dir_var.set(self.settings["library"].get("image_dir", str(ACTIVE_ROOT / "roms")))
         self.calibration_cmd_var.set(self.settings["sinden"].get("calibration_command", ""))
@@ -917,6 +1038,8 @@ class LightgunArcadeApp:
         app_settings["emulator_command"] = self.emulator_cmd_var.get().strip()
         app_settings["git_branch"] = self.branch_var.get().strip() or "main"
         app_settings["auto_git_sync"] = bool(self.auto_sync_var.get())
+        app_settings["auto_score_capture"] = bool(self.auto_score_capture_var.get())
+        app_settings["player_name"] = self.player_name_var.get().strip() or os.getenv("USERNAME", "Player")
 
         self.settings_store.save()
         self._set_status("Settings saved")
