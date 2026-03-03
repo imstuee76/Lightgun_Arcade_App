@@ -281,7 +281,7 @@ class LightgunArcadeApp:
         split.add(left, weight=4)
         split.add(right, weight=5)
 
-        self.game_list = tk.Listbox(left, height=25, font=("TkDefaultFont", 11))
+        self.game_list = tk.Listbox(left, height=10, font=("TkDefaultFont", 11))
         self.game_list.pack(side="left", fill="both", expand=True)
         self.game_list.bind("<<ListboxSelect>>", self._on_game_selected)
         scroll = ttk.Scrollbar(left, orient="vertical", command=self.game_list.yview)
@@ -292,8 +292,12 @@ class LightgunArcadeApp:
         launch_bar.pack(fill="x", padx=8, pady=(0, 8))
         ttk.Button(launch_bar, text="Launch Selected Game", command=self.launch_selected_game).pack(side="left")
 
-        self.preview_label = ttk.Label(right, text="No artwork selected", anchor="center")
-        self.preview_label.pack(fill="both", expand=True, pady=(0, 8))
+        preview_frame = ttk.Frame(right, height=210)
+        preview_frame.pack(fill="x", pady=(0, 8))
+        preview_frame.pack_propagate(False)
+
+        self.preview_label = ttk.Label(preview_frame, text="No artwork selected", anchor="center")
+        self.preview_label.pack(fill="both", expand=True)
 
         schedule = ttk.LabelFrame(right, text="Game Schedule")
         schedule.pack(fill="x", pady=4)
@@ -611,7 +615,7 @@ class LightgunArcadeApp:
             return
         try:
             img = Image.open(image_path)
-            img.thumbnail((640, 420))
+            img.thumbnail((340, 190))
             self.preview_image = ImageTk.PhotoImage(img)
             self.preview_label.configure(image=self.preview_image, text="")
         except Exception as exc:
