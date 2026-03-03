@@ -61,4 +61,9 @@ Write-Host "[sinden-win] launching: $($target.FullName)"
 
 # Official CLI args are not stable across Sinden releases.
 # Launching the Sinden utility UI provides calibration/button/diagnostics tools.
-Start-Process -FilePath $target.FullName -WorkingDirectory $target.DirectoryName
+$proc = Start-Process -FilePath $target.FullName -WorkingDirectory $target.DirectoryName -PassThru
+Start-Sleep -Seconds 2
+$proc.Refresh()
+if ($proc.HasExited) {
+    throw "Sinden utility exited immediately (code $($proc.ExitCode)). Path: $($target.FullName)"
+}

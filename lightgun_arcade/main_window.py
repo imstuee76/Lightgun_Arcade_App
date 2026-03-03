@@ -949,11 +949,24 @@ class LightgunArcadeApp:
         if not cmd:
             messagebox.showinfo("Missing Command", "Add a command first.")
             return
-        try:
-            subprocess.Popen(cmd, shell=True)
-            self._set_status(f"Executed: {cmd}")
-        except Exception as exc:
-            messagebox.showerror("Command Failed", str(exc))
+
+        def _worker() -> None:
+            try:
+                result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+                if result.returncode != 0:
+                    details = (result.stderr or result.stdout or "Unknown error").strip()
+                    self._append_error_log("command-failed", f"cmd={cmd}\nexit={result.returncode}\n{details}")
+                    self.root.after(
+                        0, lambda: messagebox.showerror("Command Failed", f"Command failed (exit {result.returncode}).\n\n{details}")
+                    )
+                    self.root.after(0, lambda: self._set_status(f"Command failed (exit {result.returncode})"))
+                    return
+                self.root.after(0, lambda: self._set_status(f"Executed: {cmd}"))
+            except Exception as exc:
+                self._append_error_log("command-exception", f"cmd={cmd}\n{type(exc).__name__}: {exc}")
+                self.root.after(0, lambda: messagebox.showerror("Command Failed", str(exc)))
+
+        threading.Thread(target=_worker, daemon=True).start()
 
     def _detect_resolutions(self) -> list[str]:
         if os.name == "nt":
