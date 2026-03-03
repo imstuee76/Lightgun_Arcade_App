@@ -73,8 +73,8 @@ class LightgunArcadeApp:
     def _init_window(self) -> None:
         version = self._read_version()
         self.root.title(f"Lightgun Arcade App v{version}")
-        self.root.geometry("1300x800")
-        self.root.minsize(1150, 700)
+        self.root.geometry("1300x533")
+        self.root.minsize(1150, 467)
 
     def _read_version(self) -> str:
         if VERSION_FILE.exists():
