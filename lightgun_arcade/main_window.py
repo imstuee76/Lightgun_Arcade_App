@@ -74,7 +74,12 @@ class LightgunArcadeApp:
     def _init_window(self) -> None:
         version = self._read_version()
         self.root.title(f"Lightgun Arcade App v{version}")
-        self.root.geometry("1300x533")
+        app_settings = self.settings.get("app", {})
+        width = int(app_settings.get("window_width", 1300))
+        height = int(app_settings.get("window_height", 533))
+        width = max(900, min(width, 4096))
+        height = max(420, min(height, 2160))
+        self.root.geometry(f"{width}x{height}")
         self.root.minsize(1150, 467)
 
     def _read_version(self) -> str:
@@ -281,10 +286,14 @@ class LightgunArcadeApp:
         split.add(left, weight=4)
         split.add(right, weight=5)
 
-        self.game_list = tk.Listbox(left, height=10, font=("TkDefaultFont", 11))
+        list_frame = ttk.Frame(left, height=260)
+        list_frame.pack(fill="x", expand=False)
+        list_frame.pack_propagate(False)
+
+        self.game_list = tk.Listbox(list_frame, height=10, font=("TkDefaultFont", 11))
         self.game_list.pack(side="left", fill="both", expand=True)
         self.game_list.bind("<<ListboxSelect>>", self._on_game_selected)
-        scroll = ttk.Scrollbar(left, orient="vertical", command=self.game_list.yview)
+        scroll = ttk.Scrollbar(list_frame, orient="vertical", command=self.game_list.yview)
         scroll.pack(side="right", fill="y")
         self.game_list.config(yscrollcommand=scroll.set)
 
@@ -1118,6 +1127,8 @@ class LightgunArcadeApp:
         app_settings["auto_git_sync"] = bool(self.auto_sync_var.get())
         app_settings["auto_score_capture"] = bool(self.auto_score_capture_var.get())
         app_settings["player_name"] = self.player_name_var.get().strip() or os.getenv("USERNAME", "Player")
+        app_settings["window_width"] = int(self.root.winfo_width())
+        app_settings["window_height"] = int(self.root.winfo_height())
 
         self.settings_store.save()
         self._set_status("Settings saved")
@@ -1182,6 +1193,13 @@ class LightgunArcadeApp:
         try:
             for stop_event in self._score_monitor_events:
                 stop_event.set()
+            try:
+                app_settings = self.settings["app"]
+                app_settings["window_width"] = int(self.root.winfo_width())
+                app_settings["window_height"] = int(self.root.winfo_height())
+                self.settings_store.save()
+            except Exception as exc:
+                self._append_error_log("window-size-save-failed", f"{type(exc).__name__}: {exc}")
             self.controller.stop()
         finally:
             self.root.destroy()

@@ -52,6 +52,8 @@ DEFAULT_SETTINGS: dict[str, Any] = {
         "auto_git_sync": True,
         "auto_score_capture": True,
         "player_name": os.getenv("USERNAME", "Player"),
+        "window_width": 1300,
+        "window_height": 533,
         "resource_links": {
             "FCEUX Docs": "https://fceux.com/web/help/fceux.html",
             "Sinden Details": "https://sindenlightgun.com/details/",
