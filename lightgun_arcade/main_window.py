@@ -56,6 +56,7 @@ class LightgunArcadeApp:
         self.action_queue: "queue.Queue[str]" = queue.Queue()
         self.controller = ControllerInput(self.action_queue, self.settings["controller"], self.logger)
         self.controller.start()
+        self._score_monitor_events: list[threading.Event] = []
 
         self.games: list[dict[str, Any]] = []
         self.preview_image: Any = None
@@ -672,6 +673,7 @@ class LightgunArcadeApp:
             self.logger.info("Launching game '%s' with command: %s", game["name"], launch_text)
             process = subprocess.Popen(launch_args, shell=False, env=launch_env)
             self._set_status(f"Launch requested for {game['name']}")
+            self._start_live_score_monitor(game["name"], score_meta)
             self._monitor_launch_process(game["name"], process, launch_text, score_meta)
         except Exception as exc:
             detail = f"{type(exc).__name__}: {exc}\nROM: {game.get('rom', '')}\nTrace:\n{traceback.format_exc()}"
@@ -744,12 +746,18 @@ class LightgunArcadeApp:
             return {"enabled": False}
         CACHE_DIR.mkdir(parents=True, exist_ok=True)
         score_file = CACHE_DIR / "last_score.json"
+        events_file = CACHE_DIR / "score_events.jsonl"
         config_file = CACHE_DIR / "score_capture.conf"
         start_ts = int(time.time())
+        try:
+            events_file.unlink(missing_ok=True)
+        except Exception:
+            pass
         config_text = "\n".join(
             [
                 f"GAME={key}",
                 f"OUTFILE={score_file}",
+                f"EVENTS_FILE={events_file}",
                 f"START_TS={start_ts}",
             ]
         )
@@ -758,12 +766,17 @@ class LightgunArcadeApp:
             "enabled": True,
             "game_key": key,
             "score_file": str(score_file),
+            "events_file": str(events_file),
             "config_file": str(config_file),
             "start_ts": start_ts,
+            "last_seq": 0,
+            "events_captured": 0,
         }
 
     def _ingest_auto_score(self, game_name: str, score_meta: dict[str, Any]) -> None:
         if not score_meta.get("enabled", False):
+            return
+        if int(score_meta.get("events_captured", 0)) > 0:
             return
         score_file = Path(str(score_meta.get("score_file", "")))
         if not score_file.exists():
@@ -780,17 +793,75 @@ class LightgunArcadeApp:
                 return
             if captured_game and captured_game not in {"duck_hunt", "duckhunt"}:
                 return
-            top = self.high_scores.top_score_for_game(game_name)
-            if captured_score > top:
-                player_name = self.player_name_var.get().strip() or self.settings["app"].get("player_name", "Player")
-                self.high_scores.add_score(score=captured_score, name=player_name, game_name=game_name)
-                self._export_scores(silent=True)
-                self._refresh_high_scores()
-                self._set_status(f"New high score captured: {captured_score} ({game_name})")
-                if self.auto_sync_var.get():
-                    trigger_auto_sync("high-score-auto-capture", self.branch_var.get().strip() or "main", self.logger)
+            player_name = self.player_name_var.get().strip() or self.settings["app"].get("player_name", "Player")
+            self.high_scores.add_score(score=captured_score, name=player_name, game_name=game_name)
+            self._export_scores(silent=True)
+            self._refresh_high_scores()
+            self._set_status(f"Score captured: {captured_score} ({game_name})")
+            if self.auto_sync_var.get():
+                trigger_auto_sync("high-score-auto-capture", self.branch_var.get().strip() or "main", self.logger)
         except Exception as exc:
             self._append_error_log("auto-score-capture-failed", f"{type(exc).__name__}: {exc}")
+
+    def _ingest_score_event(self, game_name: str, score_meta: dict[str, Any], payload: dict[str, Any]) -> None:
+        try:
+            seq = int(payload.get("seq", 0))
+            if seq <= int(score_meta.get("last_seq", 0)):
+                return
+            score_meta["last_seq"] = seq
+            score = int(payload.get("score", 0))
+            if score <= 0:
+                return
+            player_name = self.player_name_var.get().strip() or self.settings["app"].get("player_name", "Player")
+            self.high_scores.add_score(score=score, name=player_name, game_name=game_name)
+            score_meta["events_captured"] = int(score_meta.get("events_captured", 0)) + 1
+            self._export_scores(silent=True)
+            self._refresh_high_scores()
+            self._set_status(f"Live score captured: {score} ({game_name})")
+            if self.auto_sync_var.get():
+                trigger_auto_sync("high-score-auto-capture-live", self.branch_var.get().strip() or "main", self.logger)
+        except Exception as exc:
+            self._append_error_log("live-score-event-failed", f"{type(exc).__name__}: {exc}\npayload={payload}")
+
+    def _start_live_score_monitor(self, game_name: str, score_meta: dict[str, Any]) -> None:
+        if not score_meta.get("enabled", False):
+            return
+        raw_events = str(score_meta.get("events_file", "")).strip()
+        if not raw_events:
+            return
+        events_path = Path(raw_events)
+        stop_event = threading.Event()
+        score_meta["stop_event"] = stop_event
+        self._score_monitor_events.append(stop_event)
+
+        def _watch() -> None:
+            last_offset = 0
+            while not stop_event.is_set():
+                try:
+                    if events_path.exists():
+                        with events_path.open("r", encoding="utf-8", errors="ignore") as handle:
+                            handle.seek(last_offset)
+                            lines = handle.readlines()
+                            last_offset = handle.tell()
+                        for line in lines:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                payload = json.loads(line)
+                            except Exception:
+                                continue
+                            self.root.after(
+                                0,
+                                lambda p=payload: self._ingest_score_event(
+                                    game_name=game_name, score_meta=score_meta, payload=p
+                                ),
+                            )
+                except Exception as exc:
+                    self._append_error_log("live-score-monitor-failed", f"{type(exc).__name__}: {exc}")
+                time.sleep(0.4)
+
+        threading.Thread(target=_watch, daemon=True).start()
 
     def _monitor_launch_process(
         self, game_name: str, process: subprocess.Popen[Any], launch_text: str, score_meta: dict[str, Any]
@@ -820,6 +891,9 @@ class LightgunArcadeApp:
 
             if not quick_exit:
                 self.root.after(0, lambda: self._set_status(f"{game_name} closed (exit code {rc})."))
+            stop_event = score_meta.get("stop_event")
+            if isinstance(stop_event, threading.Event):
+                stop_event.set()
             self.root.after(0, lambda: self._ingest_auto_score(game_name, score_meta))
 
         threading.Thread(target=_watch, daemon=True).start()
@@ -1102,6 +1176,8 @@ class LightgunArcadeApp:
 
     def _on_close(self) -> None:
         try:
+            for stop_event in self._score_monitor_events:
+                stop_event.set()
             self.controller.stop()
         finally:
             self.root.destroy()

@@ -174,7 +174,7 @@ Optional:
 
 ## Auto Score Capture
 
-- Duck Hunt score is captured automatically from emulator memory when game closes.
-- Captured score is stored only when it beats the current top score for that game.
+- Duck Hunt scores are captured continuously from emulator memory during play.
+- Each completed run score is appended to the app database without closing/reopening app.
 - Player name comes from `App Settings -> Player Name`.
 - Error details are written to `data/logs/app/errors_YYYYMMDD.log`.
