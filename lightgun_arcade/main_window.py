@@ -39,6 +39,11 @@ except Exception:  # pragma: no cover - optional runtime dependency
     Image = None
     ImageTk = None
 
+try:
+    import pygame
+except Exception:  # pragma: no cover - optional runtime dependency
+    pygame = None
+
 
 DAY_NAMES = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
@@ -382,6 +387,9 @@ class LightgunArcadeApp:
             text="Open Sinden Utility",
             command=lambda: self._run_shell(self.calibration_cmd_var.get()),
         ).grid(row=5, column=0, sticky="w", pady=6)
+        ttk.Button(frame, text="Gun Input Test", command=self._open_gun_input_test).grid(
+            row=5, column=1, sticky="w", pady=6
+        )
         frame.columnconfigure(1, weight=1)
 
     def _build_controller_tab(self) -> None:
@@ -436,6 +444,10 @@ class LightgunArcadeApp:
         self.resolution_combo.grid(row=0, column=1, padx=6, pady=6, sticky="w")
         ttk.Button(display, text="Apply", command=self._apply_resolution).grid(row=0, column=2, padx=6, pady=6)
         ttk.Button(display, text="Refresh List", command=self._refresh_resolutions).grid(row=0, column=3, padx=6, pady=6)
+
+        test_bar = ttk.Frame(frame)
+        test_bar.pack(fill="x", pady=6)
+        ttk.Button(test_bar, text="Xbox Dir/Button Test", command=self._open_controller_test).pack(side="left", padx=4)
 
     def _build_app_tab(self) -> None:
         self._build_tab_header(self.app_tab)
@@ -1012,6 +1024,188 @@ class LightgunArcadeApp:
             return
         _name, url = self.links_tree.item(selected[0], "values")
         webbrowser.open(url)
+
+    def _open_controller_test(self) -> None:
+        if pygame is None:
+            messagebox.showerror("Missing Dependency", "pygame is required for controller test.")
+            return
+        existing = getattr(self, "_controller_test_window", None)
+        if existing is not None and existing.winfo_exists():
+            existing.focus_set()
+            return
+
+        self.controller.stop()
+        time.sleep(0.1)
+
+        window = tk.Toplevel(self.root)
+        window.title("Xbox Controller Test")
+        window.geometry("760x430")
+        self._controller_test_window = window
+
+        status_var = tk.StringVar(value="Waiting for controller...")
+        hat_var = tk.StringVar(value="D-pad: (0, 0)")
+        axis_var = tk.StringVar(value="Left Stick: x=0.00 y=0.00")
+        button_var = tk.StringVar(value="Button: none")
+
+        ttk.Label(window, text="Move D-pad/stick and press buttons to test input").pack(anchor="w", padx=10, pady=(10, 4))
+        ttk.Label(window, textvariable=status_var).pack(anchor="w", padx=10)
+        ttk.Label(window, textvariable=hat_var).pack(anchor="w", padx=10)
+        ttk.Label(window, textvariable=axis_var).pack(anchor="w", padx=10)
+        ttk.Label(window, textvariable=button_var).pack(anchor="w", padx=10, pady=(0, 8))
+
+        log = tk.Text(window, height=14)
+        log.pack(fill="both", expand=True, padx=10, pady=8)
+        log.configure(state="disabled")
+
+        event_queue: "queue.Queue[tuple[str, Any]]" = queue.Queue()
+        stop_event = threading.Event()
+
+        def append_log(line: str) -> None:
+            log.configure(state="normal")
+            log.insert("end", f"{datetime.now().strftime('%H:%M:%S')} | {line}\n")
+            log.see("end")
+            log.configure(state="disabled")
+
+        def worker() -> None:
+            joystick = None
+            announced_missing = False
+            try:
+                pygame.init()
+                pygame.joystick.init()
+                while not stop_event.is_set():
+                    if pygame.joystick.get_count() <= 0:
+                        if not announced_missing:
+                            event_queue.put(("status", "No controller detected"))
+                            announced_missing = True
+                        pygame.event.pump()
+                        time.sleep(0.2)
+                        continue
+                    if joystick is None:
+                        joystick = pygame.joystick.Joystick(0)
+                        joystick.init()
+                        announced_missing = False
+                        event_queue.put(("status", f"Connected: {joystick.get_name()}"))
+                    for event in pygame.event.get():
+                        if event.type == pygame.JOYHATMOTION:
+                            event_queue.put(("hat", event.value))
+                        elif event.type == pygame.JOYAXISMOTION and event.axis in (0, 1):
+                            event_queue.put(("axis", (event.axis, float(event.value))))
+                        elif event.type == pygame.JOYBUTTONDOWN:
+                            event_queue.put(("button_down", event.button))
+                        elif event.type == pygame.JOYBUTTONUP:
+                            event_queue.put(("button_up", event.button))
+                    time.sleep(0.01)
+            except Exception as exc:
+                event_queue.put(("error", str(exc)))
+            finally:
+                try:
+                    pygame.joystick.quit()
+                    pygame.quit()
+                except Exception:
+                    pass
+
+        axis_state = {0: 0.0, 1: 0.0}
+
+        def poll_events() -> None:
+            while True:
+                try:
+                    kind, payload = event_queue.get_nowait()
+                except queue.Empty:
+                    break
+                if kind == "status":
+                    status_var.set(str(payload))
+                    append_log(str(payload))
+                elif kind == "hat":
+                    hat_var.set(f"D-pad: {payload}")
+                    append_log(f"D-pad {payload}")
+                elif kind == "axis":
+                    axis_idx, axis_val = payload
+                    axis_state[int(axis_idx)] = float(axis_val)
+                    axis_var.set(f"Left Stick: x={axis_state[0]:.2f} y={axis_state[1]:.2f}")
+                elif kind == "button_down":
+                    button_var.set(f"Button: {payload} (down)")
+                    append_log(f"Button {payload} down")
+                elif kind == "button_up":
+                    button_var.set(f"Button: {payload} (up)")
+                    append_log(f"Button {payload} up")
+                elif kind == "error":
+                    append_log(f"ERROR: {payload}")
+                    status_var.set("Controller test error")
+
+            if window.winfo_exists() and not stop_event.is_set():
+                window.after(40, poll_events)
+
+        thread = threading.Thread(target=worker, daemon=True)
+        thread.start()
+        poll_events()
+
+        def on_close() -> None:
+            stop_event.set()
+            window.destroy()
+            self._restart_controller()
+
+        window.protocol("WM_DELETE_WINDOW", on_close)
+
+    def _open_gun_input_test(self) -> None:
+        existing = getattr(self, "_gun_test_window", None)
+        if existing is not None and existing.winfo_exists():
+            existing.focus_set()
+            return
+
+        window = tk.Toplevel(self.root)
+        window.title("Gun Input Test")
+        window.geometry("900x500")
+        self._gun_test_window = window
+
+        ttk.Label(
+            window,
+            text="Move the gun to track cursor. Pull trigger/reload buttons and watch events below.",
+        ).pack(anchor="w", padx=10, pady=(10, 4))
+
+        pos_var = tk.StringVar(value="Position: x=0 y=0")
+        btn_var = tk.StringVar(value="Button: none")
+        ttk.Label(window, textvariable=pos_var).pack(anchor="w", padx=10)
+        ttk.Label(window, textvariable=btn_var).pack(anchor="w", padx=10, pady=(0, 8))
+
+        canvas = tk.Canvas(window, bg="black", height=320, cursor="crosshair")
+        canvas.pack(fill="x", padx=10, pady=(0, 8))
+        cross_h = canvas.create_line(0, 0, 0, 0, fill="lime", width=1)
+        cross_v = canvas.create_line(0, 0, 0, 0, fill="lime", width=1)
+
+        log = tk.Text(window, height=8)
+        log.pack(fill="both", expand=True, padx=10, pady=(0, 10))
+        log.configure(state="disabled")
+
+        def append_log(line: str) -> None:
+            log.configure(state="normal")
+            log.insert("end", f"{datetime.now().strftime('%H:%M:%S')} | {line}\n")
+            log.see("end")
+            log.configure(state="disabled")
+
+        def on_motion(event: tk.Event[Any]) -> None:
+            w = canvas.winfo_width()
+            h = canvas.winfo_height()
+            x = int(event.x)
+            y = int(event.y)
+            pos_var.set(f"Position: x={x} y={y}")
+            canvas.coords(cross_h, 0, y, w, y)
+            canvas.coords(cross_v, x, 0, x, h)
+
+        def on_btn_down(event: tk.Event[Any]) -> None:
+            btn_var.set(f"Button: {event.num} down")
+            append_log(f"Button {event.num} down")
+
+        def on_btn_up(event: tk.Event[Any]) -> None:
+            btn_var.set(f"Button: {event.num} up")
+            append_log(f"Button {event.num} up")
+
+        canvas.bind("<Motion>", on_motion)
+        canvas.bind("<ButtonPress-1>", on_btn_down)
+        canvas.bind("<ButtonRelease-1>", on_btn_up)
+        canvas.bind("<ButtonPress-2>", on_btn_down)
+        canvas.bind("<ButtonRelease-2>", on_btn_up)
+        canvas.bind("<ButtonPress-3>", on_btn_down)
+        canvas.bind("<ButtonRelease-3>", on_btn_up)
 
     def _run_turnkey_setup(self) -> None:
         self._apply_turnkey_defaults()
