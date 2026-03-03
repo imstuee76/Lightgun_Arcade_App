@@ -37,14 +37,42 @@ function Select-SindenExecutable {
         }
     }
 
-    # Fallback: first candidate sorted by shortest path (usually top-level app exe).
-    return $Candidates | Sort-Object @{ Expression = { $_.FullName.Length } }, FullName | Select-Object -First 1
+    # Fallback: choose by path score, strongly avoiding pedal/linux updater paths.
+    $scored = foreach ($c in $Candidates) {
+        $score = 0
+        $full = $c.FullName
+        $name = $c.Name
+
+        if ($full -match "(?i)\\Windows\\") { $score += 120 }
+        if ($full -match "(?i)\\SindenLightgunSoftwareRelease") { $score += 80 }
+        if ($full -match "(?i)\\LightgunSoftware") { $score += 50 }
+        if ($full -match "(?i)\\Pedal\\") { $score -= 500 }
+        if ($full -match "(?i)\\UpdateExistingLinuxBuilds\\") { $score -= 600 }
+        if ($full -match "(?i)\\Linux\\") { $score -= 200 }
+        if ($full -match "(?i)\\Firmware\\") { $score -= 120 }
+        if ($full -match "(?i)\\Driver") { $score -= 120 }
+        if ($name -match "(?i)^LightgunMono\.exe$") { $score += 25 }
+
+        [PSCustomObject]@{
+            Score    = $score
+            FullName = $c.FullName
+            Item     = $c
+        }
+    }
+
+    return $scored |
+        Sort-Object @{ Expression = { $_.Score }; Descending = $true }, @{ Expression = { $_.FullName.Length } }, FullName |
+        Select-Object -First 1 |
+        Select-Object -ExpandProperty Item
 }
 
 $exeCandidates = Get-ChildItem -Path $SindenRoot -Recurse -File -Filter *.exe |
     Where-Object {
         $_.Name -notmatch "(?i)unins|uninstall|setup|installer|driver" -and
         $_.Name -notmatch "(?i)pedal|foot" -and
+        $_.FullName -notmatch "(?i)\\Pedal\\" -and
+        $_.FullName -notmatch "(?i)\\UpdateExistingLinuxBuilds\\" -and
+        $_.FullName -notmatch "(?i)\\Linux\\" -and
         ($_.Name -match "(?i)sinden|lightgun")
     }
 

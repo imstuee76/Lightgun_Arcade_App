@@ -167,41 +167,54 @@ class ControllerInput:
             while self._running:
                 handled = False
 
-                if pygame_ready and pygame is not None and pygame.joystick.get_count() > 0:
-                    joy = pygame.joystick.Joystick(0)
-                    joy.init()
-                    for event in pygame.event.get():
-                        if event.type == pygame.JOYHATMOTION:
-                            x, y = event.value
-                            if y == 1:
-                                self._emit("up")
-                            elif y == -1:
-                                self._emit("down")
-                            if x == 1:
-                                self._emit("right")
-                            elif x == -1:
-                                self._emit("left")
-                        elif event.type == pygame.JOYAXISMOTION:
-                            if event.axis == 1:
-                                if event.value < -deadzone:
-                                    self._emit("up")
-                                elif event.value > deadzone:
-                                    self._emit("down")
-                            if event.axis == 0:
-                                if event.value > deadzone:
-                                    self._emit("right")
-                                elif event.value < -deadzone:
-                                    self._emit("left")
-                        elif event.type == pygame.JOYBUTTONDOWN:
-                            if event.button == int(button_map.get("select", 0)):
-                                self._emit("select")
-                            elif event.button == int(button_map.get("back", 1)):
-                                self._emit("back")
-                            elif event.button == int(button_map.get("tab_next", 5)):
-                                self._emit("tab_next")
-                            elif event.button == int(button_map.get("tab_prev", 4)):
-                                self._emit("tab_prev")
-                    handled = True
+                if pygame_ready and pygame is not None:
+                    try:
+                        joystick_count = pygame.joystick.get_count()
+                    except Exception as exc:
+                        self.logger.warning("pygame joystick poll failed (%s); disabling pygame input", exc)
+                        pygame_ready = False
+                        joystick_count = 0
+
+                    if joystick_count > 0:
+                        try:
+                            joy = pygame.joystick.Joystick(0)
+                            joy.init()
+                            for event in pygame.event.get():
+                                if event.type == pygame.JOYHATMOTION:
+                                    x, y = event.value
+                                    if y == 1:
+                                        self._emit("up")
+                                    elif y == -1:
+                                        self._emit("down")
+                                    if x == 1:
+                                        self._emit("right")
+                                    elif x == -1:
+                                        self._emit("left")
+                                elif event.type == pygame.JOYAXISMOTION:
+                                    if event.axis == 1:
+                                        if event.value < -deadzone:
+                                            self._emit("up")
+                                        elif event.value > deadzone:
+                                            self._emit("down")
+                                    if event.axis == 0:
+                                        if event.value > deadzone:
+                                            self._emit("right")
+                                        elif event.value < -deadzone:
+                                            self._emit("left")
+                                elif event.type == pygame.JOYBUTTONDOWN:
+                                    if event.button == int(button_map.get("select", 0)):
+                                        self._emit("select")
+                                    elif event.button == int(button_map.get("back", 1)):
+                                        self._emit("back")
+                                    elif event.button == int(button_map.get("tab_next", 5)):
+                                        self._emit("tab_next")
+                                    elif event.button == int(button_map.get("tab_prev", 4)):
+                                        self._emit("tab_prev")
+                            handled = True
+                        except Exception as exc:
+                            # Some DirectInput backends fail with SetCooperativeLevel on specific windows.
+                            self.logger.warning("pygame controller poll failed (%s); falling back to XInput only", exc)
+                            pygame_ready = False
 
                 if (not handled) and self._poll_xinput(deadzone, button_map):
                     handled = True
@@ -217,4 +230,3 @@ class ControllerInput:
             except Exception:
                 pass
             self.logger.info("Controller input service stopped")
-
